@@ -1,0 +1,627 @@
+#!/usr/bin/env python3
+"""
+Smart Recognition System for Booster K1
+Combines YOLO object detection + Face recognition + TTS
+Asks for names when unknown people/objects are detected
+"""
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+import argparse
+import time
+import json
+import os
+from datetime import datetime
+
+# Import our modules
+from face_recognition import FaceRecognizer
+from tts_module import TextToSpeech
+
+class SmartRecognizer:
+    """Unified recognizer for objects and people"""
+
+    def __init__(self, database_path='smart_database.json', use_yolo=True, use_deepface=True, use_tts=True):
+        self.database_path = database_path
+        self.database = self._load_database()
+
+        # Initialize YOLO
+        self.yolo_available = False
+        self.yolo_model = None
+        if use_yolo:
+            try:
+                from ultralytics import YOLO
+                print("Loading YOLOv8 model...")
+                self.yolo_model = YOLO('yolov8n.pt')
+                self.yolo_available = True
+                print("✓ YOLO loaded successfully")
+            except Exception as e:
+                print(f"⚠️  YOLO not available: {e}")
+
+        # Initialize face recognizer
+        self.face_recognizer = FaceRecognizer(use_deepface=use_deepface)
+
+        # Initialize TTS
+        self.tts = None
+        if use_tts:
+            self.tts = TextToSpeech(engine='espeak')
+
+        # Track what we've asked about recently (to avoid spam)
+        self.recently_asked = {}  # {name: timestamp}
+        self.ask_cooldown = 30.0  # seconds between asking about same thing
+
+    def _load_database(self):
+        """Load object database"""
+        if os.path.exists(self.database_path):
+            try:
+                with open(self.database_path, 'r') as f:
+                    return json.load(f)
+            except:
+                return self._create_empty_database()
+        return self._create_empty_database()
+
+    def _create_empty_database(self):
+        """Create empty database structure"""
+        return {
+            'people': {},      # {name: {first_seen, last_seen, times_seen}}
+            'objects': {},     # {name: {class, first_seen, last_seen, times_seen}}
+            'version': '1.0'
+        }
+
+    def _save_database(self):
+        """Save database to file"""
+        try:
+            with open(self.database_path, 'w') as f:
+                json.dump(self.database, f, indent=2)
+        except Exception as e:
+            print(f"✗ Error saving database: {e}")
+
+    def detect_and_recognize(self, frame):
+        """
+        Main detection and recognition pipeline
+        Returns annotated frame and list of detections
+        """
+        detections = []
+
+        # First, detect faces for people
+        faces = self.face_recognizer.detect_faces(frame)
+
+        for (x, y, w, h) in faces:
+            face_img = frame[y:y+h, x:x+w]
+
+            # Try to recognize the person
+            if self.face_recognizer.deepface_available:
+                name, confidence = self.face_recognizer.recognize_face(face_img)
+
+                if name is None or confidence < 0.6:
+                    # Unknown person!
+                    name = "Unknown Person"
+                    self._handle_unknown_person(face_img, (x, y, w, h))
+                else:
+                    # Known person, update database
+                    self._update_person(name)
+
+                detections.append({
+                    'type': 'person',
+                    'name': name,
+                    'confidence': confidence,
+                    'bbox': (x, y, w, h)
+                })
+
+                # Draw on frame
+                color = (0, 255, 0) if name != "Unknown Person" else (0, 165, 255)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                label = f"{name}"
+                if confidence > 0:
+                    label += f" ({confidence:.2f})"
+                cv2.putText(frame, label, (x, y-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            else:
+                # No face recognition, just show as detected person
+                detections.append({
+                    'type': 'person',
+                    'name': 'Person (no recognition)',
+                    'confidence': 0.0,
+                    'bbox': (x, y, w, h)
+                })
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(frame, 'Person', (x, y-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # Run YOLO for general object detection
+        if self.yolo_available:
+            results = self.yolo_model(frame, conf=0.5, verbose=False)
+
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    # Get box coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+                    # Get class and confidence
+                    cls = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    class_name = result.names[cls]
+
+                    # Skip if it's a person (we already handled faces)
+                    if class_name == 'person':
+                        continue
+
+                    # Check if this object has a custom name
+                    custom_name = self._get_object_name(class_name, (x1, y1, x2, y2))
+
+                    if custom_name:
+                        display_name = custom_name
+                        self._update_object(custom_name, class_name)
+                    else:
+                        display_name = class_name
+                        # Ask what this is if we don't have a custom name
+                        self._handle_unknown_object(class_name, (x1, y1, x2, y2))
+
+                    detections.append({
+                        'type': 'object',
+                        'name': display_name,
+                        'class': class_name,
+                        'confidence': conf,
+                        'bbox': (x1, y1, x2, y2)
+                    })
+
+                    # Draw on frame
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    label = f"{display_name} ({conf:.2f})"
+                    cv2.putText(frame, label, (x1, y1-10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+        return frame, detections
+
+    def _handle_unknown_person(self, face_img, bbox):
+        """Handle detection of unknown person"""
+        key = "unknown_person"
+
+        # Check if we recently asked about this
+        if key in self.recently_asked:
+            elapsed = time.time() - self.recently_asked[key]
+            if elapsed < self.ask_cooldown:
+                return
+
+        # Ask via TTS
+        if self.tts and self.tts.available:
+            self.tts.speak("I see someone I don't recognize. Who is this?")
+            self.recently_asked[key] = time.time()
+
+    def _handle_unknown_object(self, class_name, bbox):
+        """Handle detection of object without custom name"""
+        key = f"unknown_object_{class_name}"
+
+        # Check if we recently asked about this
+        if key in self.recently_asked:
+            elapsed = time.time() - self.recently_asked[key]
+            if elapsed < self.ask_cooldown:
+                return
+
+        # Ask via TTS (but less frequently than people)
+        if self.tts and self.tts.available and class_name not in ['chair', 'couch', 'table']:
+            # Don't ask about very common objects
+            self.tts.speak(f"I see a {class_name}. Does it have a name?")
+            self.recently_asked[key] = time.time()
+
+    def _get_object_name(self, class_name, bbox):
+        """Get custom name for an object if it exists"""
+        # For now, just check if we have this object class with a custom name
+        if class_name in self.database['objects']:
+            return self.database['objects'][class_name].get('custom_name')
+        return None
+
+    def _update_person(self, name):
+        """Update person in database"""
+        now = datetime.now().isoformat()
+        if name not in self.database['people']:
+            self.database['people'][name] = {
+                'first_seen': now,
+                'last_seen': now,
+                'times_seen': 1
+            }
+        else:
+            self.database['people'][name]['last_seen'] = now
+            self.database['people'][name]['times_seen'] += 1
+        self._save_database()
+
+    def _update_object(self, custom_name, class_name):
+        """Update object in database"""
+        now = datetime.now().isoformat()
+        if custom_name not in self.database['objects']:
+            self.database['objects'][custom_name] = {
+                'class': class_name,
+                'first_seen': now,
+                'last_seen': now,
+                'times_seen': 1
+            }
+        else:
+            self.database['objects'][custom_name]['last_seen'] = now
+            self.database['objects'][custom_name]['times_seen'] += 1
+        self._save_database()
+
+    def learn_person(self, name, face_img):
+        """Teach the system a person's name"""
+        if self.face_recognizer.add_person(name, face_img):
+            self._update_person(name)
+            if self.tts and self.tts.available:
+                self.tts.speak(f"Nice to meet you, {name}!")
+            return True
+        return False
+
+    def name_object(self, class_name, custom_name):
+        """Give an object a custom name"""
+        if class_name not in self.database['objects']:
+            self.database['objects'][class_name] = {
+                'class': class_name,
+                'custom_name': custom_name,
+                'first_seen': datetime.now().isoformat(),
+                'last_seen': datetime.now().isoformat(),
+                'times_seen': 0
+            }
+        else:
+            self.database['objects'][class_name]['custom_name'] = custom_name
+
+        self._save_database()
+
+        if self.tts and self.tts.available:
+            self.tts.speak(f"Okay, I'll remember this {class_name} as {custom_name}.")
+
+        return True
+
+
+class SmartRecognitionNode(Node):
+    """ROS2 node for smart recognition"""
+
+    def __init__(self, recognizer: SmartRecognizer):
+        super().__init__('smart_recognition_node')
+
+        self.bridge = CvBridge()
+        self.recognizer = recognizer
+        self.latest_frame = None
+        self.latest_detections = []
+
+        # Performance tracking
+        self.fps = 0
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+
+        # Learning mode
+        self.learning_mode = False
+        self.learning_name = None
+
+        # Subscribe to camera
+        left_topic = '/booster_camera_bridge/image_left_raw'
+        self.get_logger().info(f'Camera topic: {left_topic}')
+
+        self.subscription = self.create_subscription(
+            Image,
+            left_topic,
+            self.camera_callback,
+            10
+        )
+
+    def convert_nv12_to_bgr(self, msg):
+        """Convert NV12 ROS image to BGR"""
+        if msg.encoding == 'nv12':
+            height = msg.height
+            width = msg.width
+            img_data = np.frombuffer(msg.data, dtype=np.uint8)
+            yuv = img_data.reshape((int(height * 1.5), width))
+            cv_image = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
+            return cv_image
+        else:
+            return self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def update_fps(self):
+        """Update FPS counter"""
+        self.frame_count += 1
+        current_time = time.time()
+        elapsed = current_time - self.last_fps_time
+
+        if elapsed > 1.0:
+            self.fps = self.frame_count / elapsed
+            self.frame_count = 0
+            self.last_fps_time = current_time
+
+    def camera_callback(self, msg):
+        """Process camera frames"""
+        try:
+            frame = self.convert_nv12_to_bgr(msg)
+
+            # Learning mode: capture face for person
+            if self.learning_mode and self.learning_name:
+                faces = self.recognizer.face_recognizer.detect_faces(frame)
+                if len(faces) > 0:
+                    x, y, w, h = faces[0]
+                    face_img = frame[y:y+h, x:x+w]
+                    self.recognizer.learn_person(self.learning_name, face_img)
+                    self.learning_mode = False
+                    self.learning_name = None
+
+            # Run recognition
+            annotated_frame, detections = self.recognizer.detect_and_recognize(frame)
+            self.latest_detections = detections
+
+            # Update FPS
+            self.update_fps()
+
+            # Add stats to frame
+            cv2.putText(annotated_frame, f'FPS: {self.fps:.1f}', (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(annotated_frame, f'Detections: {len(detections)}', (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+            people_count = len(self.recognizer.database['people'])
+            objects_count = len(self.recognizer.database['objects'])
+            cv2.putText(annotated_frame, f'Known: {people_count}P / {objects_count}O', (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+            if self.learning_mode:
+                cv2.putText(annotated_frame, f'LEARNING: {self.learning_name}', (10, 120),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            self.latest_frame = annotated_frame
+
+        except Exception as e:
+            self.get_logger().error(f'Error processing frame: {str(e)}')
+
+    def start_learning(self, name):
+        """Start learning a person's name"""
+        self.learning_mode = True
+        self.learning_name = name
+
+
+class SmartRecognitionHTTPHandler(BaseHTTPRequestHandler):
+    """HTTP handler for web interface"""
+
+    camera_node = None
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        if self.path == '/':
+            self._serve_main_page()
+        elif self.path.startswith('/feed'):
+            self._serve_feed()
+        elif self.path.startswith('/learn'):
+            self._handle_learn()
+        elif self.path.startswith('/name_object'):
+            self._handle_name_object()
+        elif self.path.startswith('/stats'):
+            self._serve_stats()
+        else:
+            self.send_error(404)
+
+    def _serve_main_page(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Smart Recognition System</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background-color: #1e1e1e;
+                    color: #ffffff;
+                    margin: 0;
+                    padding: 20px;
+                }
+                h1 { color: #4CAF50; }
+                .container {
+                    max-width: 1200px;
+                    margin: 0 auto;
+                }
+                .controls {
+                    background-color: #2d2d2d;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin-bottom: 20px;
+                }
+                input, button {
+                    padding: 8px;
+                    margin: 5px;
+                    border-radius: 4px;
+                }
+                button {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    cursor: pointer;
+                }
+                button:hover { background-color: #45a049; }
+                img {
+                    max-width: 100%;
+                    border-radius: 8px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🤖 Smart Recognition System</h1>
+
+                <div class="controls">
+                    <h3>Learn Person</h3>
+                    <input type="text" id="personName" placeholder="Enter person's name">
+                    <button onclick="learnPerson()">Learn Person</button>
+                </div>
+
+                <div class="controls">
+                    <h3>Name Object</h3>
+                    <input type="text" id="objectClass" placeholder="Object class (e.g., bottle)">
+                    <input type="text" id="objectName" placeholder="Custom name">
+                    <button onclick="nameObject()">Name Object</button>
+                </div>
+
+                <img id="feed" src="/feed" style="width: 100%; margin-top: 20px;">
+
+                <div id="stats" style="margin-top: 20px;"></div>
+            </div>
+
+            <script>
+                function refreshFeed() {
+                    document.getElementById('feed').src = '/feed?t=' + new Date().getTime();
+                }
+                setInterval(refreshFeed, 100);
+
+                function learnPerson() {
+                    const name = document.getElementById('personName').value;
+                    if (name) {
+                        fetch('/learn?name=' + encodeURIComponent(name))
+                            .then(r => r.text())
+                            .then(alert);
+                        document.getElementById('personName').value = '';
+                    }
+                }
+
+                function nameObject() {
+                    const cls = document.getElementById('objectClass').value;
+                    const name = document.getElementById('objectName').value;
+                    if (cls && name) {
+                        fetch('/name_object?class=' + encodeURIComponent(cls) + '&name=' + encodeURIComponent(name))
+                            .then(r => r.text())
+                            .then(alert);
+                    }
+                }
+
+                function refreshStats() {
+                    fetch('/stats')
+                        .then(r => r.json())
+                        .then(data => {
+                            let html = '<h3>Database</h3>';
+                            html += '<p>People: ' + Object.keys(data.people).length + '</p>';
+                            html += '<p>Objects: ' + Object.keys(data.objects).length + '</p>';
+                            document.getElementById('stats').innerHTML = html;
+                        });
+                }
+                setInterval(refreshStats, 5000);
+                refreshStats();
+            </script>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode())
+
+    def _serve_feed(self):
+        if self.camera_node and self.camera_node.latest_frame is not None:
+            self.send_response(200)
+            self.send_header('Content-type', 'image/jpeg')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            _, buffer = cv2.imencode('.jpg', self.camera_node.latest_frame,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 85])
+            self.wfile.write(buffer.tobytes())
+        else:
+            self.send_error(503)
+
+    def _handle_learn(self):
+        import urllib.parse
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        name = params.get('name', [''])[0]
+
+        if name and self.camera_node:
+            self.camera_node.start_learning(name)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(f"Learning {name}...".encode())
+        else:
+            self.send_error(400)
+
+    def _handle_name_object(self):
+        import urllib.parse
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        class_name = params.get('class', [''])[0]
+        custom_name = params.get('name', [''])[0]
+
+        if class_name and custom_name and self.camera_node:
+            self.camera_node.recognizer.name_object(class_name, custom_name)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(f"Named {class_name} as {custom_name}".encode())
+        else:
+            self.send_error(400)
+
+    def _serve_stats(self):
+        if self.camera_node:
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            stats = self.camera_node.recognizer.database
+            self.wfile.write(json.dumps(stats).encode())
+        else:
+            self.send_error(503)
+
+
+def spin_ros(node):
+    rclpy.spin(node)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Smart recognition system')
+    parser.add_argument('--no-yolo', action='store_true', help='Disable YOLO')
+    parser.add_argument('--no-deepface', action='store_true', help='Disable DeepFace')
+    parser.add_argument('--no-tts', action='store_true', help='Disable TTS')
+    parser.add_argument('--database', type=str, default='smart_database.json')
+    parser.add_argument('--host', type=str, default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=8080)
+
+    args = parser.parse_args()
+
+    print(f'\n{"="*60}')
+    print(f'Smart Recognition System')
+    print(f'{"="*60}')
+
+    # Initialize recognizer
+    recognizer = SmartRecognizer(
+        database_path=args.database,
+        use_yolo=not args.no_yolo,
+        use_deepface=not args.no_deepface,
+        use_tts=not args.no_tts
+    )
+
+    # Initialize ROS2
+    rclpy.init()
+    camera_node = SmartRecognitionNode(recognizer=recognizer)
+    SmartRecognitionHTTPHandler.camera_node = camera_node
+
+    # Start ROS2
+    ros_thread = threading.Thread(target=spin_ros, args=(camera_node,), daemon=True)
+    ros_thread.start()
+
+    # Start HTTP server
+    httpd = HTTPServer((args.host, args.port), SmartRecognitionHTTPHandler)
+
+    print(f'Web interface: http://{args.host}:{args.port}')
+    print(f'Database: {args.database}')
+    print(f'\nPress Ctrl+C to stop')
+    print(f'{"="*60}\n')
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print('\n\nShutting down...')
+        httpd.shutdown()
+        camera_node.destroy_node()
+        rclpy.shutdown()
+        if recognizer.tts:
+            recognizer.tts.stop()
+
+
+if __name__ == '__main__':
+    main()

@@ -134,18 +134,46 @@ Building a simple, working robotics intelligence system inspired by the whoami p
   - [ ] Coordinated tasks
   - [ ] Distributed database
 
+### Phase 6: Advanced Mobility 🛹
+**Goal: Teach K1 to ride a hoverboard**
+
+- [ ] **Balance Control**
+  - [ ] IMU sensor integration
+  - [ ] Real-time balance adjustment
+  - [ ] Center of gravity control
+  - [ ] Stability algorithms
+
+- [ ] **Hoverboard Interface**
+  - [ ] Hoverboard sensor integration
+  - [ ] Speed control mapping
+  - [ ] Direction control
+  - [ ] Emergency stop mechanism
+
+- [ ] **Learning & Training**
+  - [ ] Simulation environment
+  - [ ] Reinforcement learning setup
+  - [ ] Progressive difficulty training
+  - [ ] Safety boundary detection
+
+- [ ] **Autonomous Riding**
+  - [ ] Mount/dismount procedures
+  - [ ] Navigation while riding
+  - [ ] Obstacle avoidance on hoverboard
+  - [ ] Recovery from instability
+
 ---
 
 ## Current Sprint 🏃
 
-**Not yet started - waiting for direction**
+**ACTIVE: Phase 1 - Face Recognition**
 
-### Next Steps
-1. Choose Phase 1, 2, or 3 to start
-2. Break down first task
-3. Implement incrementally
-4. Test on real hardware
-5. Update this roadmap
+### Current Tasks
+1. Install and test DeepFace library
+2. Create simple face recognition module
+3. Build person database (JSON)
+4. Integrate with camera feed
+5. Add name learning
+6. Test on K1 hardware
 
 ---
 
