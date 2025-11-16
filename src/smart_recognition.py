@@ -632,12 +632,109 @@ def spin_ros(node):
     rclpy.spin(node)
 
 
+def ask_permission_to_start(recognizer):
+    """
+    Soft auto-start: Ask permission before starting full system
+    Returns True if user wants to start, False otherwise
+    """
+    if not recognizer.tts or not recognizer.tts.available:
+        # No TTS, just auto-start
+        return True
+
+    if not recognizer.voice_listener or not recognizer.voice_listener.available:
+        # No voice input, just auto-start
+        return True
+
+    print("\n🤖 Asking permission to start...")
+
+    # Ask for permission
+    response = recognizer.voice_listener.ask_and_listen(
+        recognizer.tts,
+        "Hello! I am ready. Would you like me to start the recognition system?",
+        timeout=10,
+        phrase_time_limit=5
+    )
+
+    if response:
+        response_lower = response.lower().strip()
+        print(f"Response: {response}")
+
+        # Check for affirmative responses
+        affirmative = ['yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'start', 'go', 'begin', 'please']
+        negative = ['no', 'nope', 'not now', 'later', 'wait', 'stop']
+
+        if any(word in response_lower for word in affirmative):
+            recognizer.tts.speak("Great! Starting now.", blocking=True)
+            return True
+        elif any(word in response_lower for word in negative):
+            recognizer.tts.speak("Okay, I'll wait. Say start when you're ready.", blocking=True)
+            return False
+        else:
+            # Unclear response, ask for confirmation
+            recognizer.tts.speak("I didn't quite understand. Starting anyway.", blocking=True)
+            return True
+    else:
+        # No response, auto-start after a moment
+        print("No response detected, auto-starting...")
+        recognizer.tts.speak("No response detected. Starting recognition system.", blocking=True)
+        return True
+
+
+def standby_mode(recognizer):
+    """
+    Standby mode - wait for user to say 'start' or similar
+    """
+    print("\n💤 Standby mode - say 'start' when ready")
+    print("Press Ctrl+C to exit")
+
+    if not recognizer.voice_listener or not recognizer.voice_listener.available:
+        print("⚠️  Voice listener not available, exiting standby")
+        return True
+
+    # Listen continuously for start command
+    start_commands = ['start', 'begin', 'go', 'ready', 'let\'s go']
+
+    recognizer.voice_listener.start_continuous_listening()
+
+    # Simple callback to check for start commands
+    start_detected = threading.Event()
+
+    def check_for_start(text):
+        text_lower = text.lower()
+        if any(cmd in text_lower for cmd in start_commands):
+            print(f"✓ Start command detected: {text}")
+            recognizer.tts.speak("Starting recognition system now!", blocking=False)
+            start_detected.set()
+
+    # Set callback
+    original_callback = recognizer.voice_listener.callback
+    recognizer.voice_listener.callback = check_for_start
+
+    try:
+        # Wait for start command
+        while not start_detected.is_set():
+            time.sleep(0.5)
+
+        # Restore original callback
+        recognizer.voice_listener.callback = original_callback
+        recognizer.voice_listener.stop_continuous_listening()
+
+        return True
+
+    except KeyboardInterrupt:
+        print("\n\n👋 Exiting standby mode...")
+        recognizer.voice_listener.callback = original_callback
+        recognizer.voice_listener.stop_continuous_listening()
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Smart recognition system with voice learning')
     parser.add_argument('--no-yolo', action='store_true', help='Disable YOLO')
     parser.add_argument('--no-deepface', action='store_true', help='Disable DeepFace')
     parser.add_argument('--no-tts', action='store_true', help='Disable TTS')
     parser.add_argument('--no-voice', action='store_true', help='Disable voice learning')
+    parser.add_argument('--auto-ask', action='store_true', help='Ask permission before starting (soft auto-start)')
     parser.add_argument('--database', type=str, default='smart_database.json')
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8080)
@@ -648,7 +745,7 @@ def main():
     print(f'Smart Recognition System with Voice Learning')
     print(f'{"="*60}')
 
-    # Initialize recognizer
+    # Initialize recognizer (lightweight initialization)
     recognizer = SmartRecognizer(
         database_path=args.database,
         use_yolo=not args.no_yolo,
@@ -656,6 +753,22 @@ def main():
         use_tts=not args.no_tts,
         use_voice=not args.no_voice
     )
+
+    # Soft auto-start: Ask permission if --auto-ask is enabled
+    if args.auto_ask:
+        should_start = ask_permission_to_start(recognizer)
+
+        if not should_start:
+            # Enter standby mode and wait for start command
+            should_start = standby_mode(recognizer)
+
+            if not should_start:
+                # User cancelled from standby
+                print("\n👋 Goodbye!")
+                if recognizer.tts:
+                    recognizer.tts.speak("Goodbye!", blocking=True)
+                    recognizer.tts.stop()
+                return
 
     # Initialize ROS2
     rclpy.init()
@@ -688,8 +801,15 @@ def main():
     if recognizer.voice_listener and recognizer.voice_listener.available:
         print(f'\n💡 Voice learning enabled! K1 will ask "Who is this?" and listen for your answer.')
 
+    if args.auto_ask:
+        print(f'\n🤖 Soft auto-start enabled')
+
     print(f'\nPress Ctrl+C to stop')
     print(f'{"="*60}\n')
+
+    # Announce startup
+    if recognizer.tts and recognizer.tts.available:
+        recognizer.tts.speak("Recognition system is now running.")
 
     try:
         httpd.serve_forever()
