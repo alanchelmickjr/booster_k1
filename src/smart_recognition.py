@@ -381,14 +381,11 @@ class SmartRecognizer:
                 'first_seen': now,
                 'last_seen': now,
                 'times_seen': 1,
-                'conversations': []  # Always include conversations for consistency
+                'conversations': []
             }
         else:
             self.database['people'][name]['last_seen'] = now
             self.database['people'][name]['times_seen'] += 1
-            # Ensure conversations field exists for backward compatibility
-            if 'conversations' not in self.database['people'][name]:
-                self.database['people'][name]['conversations'] = []
         self._save_database()
 
     def _update_object(self, custom_name, class_name):
@@ -423,9 +420,8 @@ class SmartRecognizer:
 
         if person_info:
             times_seen = person_info.get('times_seen', 1)
-            has_conversations = 'conversations' in person_info and len(person_info.get('conversations', [])) > 0
 
-            # Greet with appropriate familiarity
+            # Greet with appropriate familiarity based on how many times we've met
             if times_seen == 1:
                 greeting = f"Hello again, {name}!"
             elif times_seen < 5:
@@ -434,9 +430,6 @@ class SmartRecognizer:
                 greeting = f"Welcome back, {name}!"
 
             self.tts.speak(greeting, blocking=False)
-        else:
-            # Fallback if person not in database (shouldn't happen)
-            self.tts.speak(f"Hello, {name}!", blocking=False)
 
     def name_object(self, class_name, custom_name):
         """Give an object a custom name"""
