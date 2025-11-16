@@ -1,0 +1,21 @@
+# Core dependencies
+opencv-python>=4.5.0
+numpy>=1.19.0
+
+# ROS2 and camera
+# cv_bridge (install via apt: ros-humble-cv-bridge or ros-foxy-cv-bridge)
+
+# YOLO detection
+ultralytics>=8.0.0
+
+# Face recognition (Phase 1)
+deepface>=0.0.79
+tensorflow>=2.12.0  # Backend for DeepFace
+
+# Voice control (optional)
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.13
+
+# Future dependencies (commented for now)
+# pyttsx3  # Text-to-speech
+# flask    # Better web server
