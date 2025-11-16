@@ -34,7 +34,7 @@ python src/came_yolo.py
 - Web interface at: http://192.168.88.153:8080
 - Options: `--model yolov8n`, `--detection face/object`
 
-### 4. Smart Recognition System (NEW! 🎯)
+### 4. Smart Recognition System with Voice Learning (NEW! 🎯)
 ```bash
 python src/smart_recognition.py
 ```
@@ -43,14 +43,21 @@ python src/smart_recognition.py
 - YOLO object detection
 - Face recognition with DeepFace
 - Text-to-Speech (asks "Who is this?" for unknown people)
+- **Voice learning - K1 listens to your answer and learns names!**
 - Object naming database
 - Web interface at: http://192.168.88.153:8080
 
 **Usage:**
 1. When K1 sees an unknown person, it asks "Who is this?"
-2. Use web interface to teach names
-3. Name objects through the web UI
-4. K1 remembers everyone and everything!
+2. **Say your name out loud** - K1 listens and learns automatically!
+3. Alternatively, use web interface to teach names
+4. Name objects through the web UI
+5. K1 remembers everyone and everything!
+
+**Disable voice learning (use web only):**
+```bash
+python src/smart_recognition.py --no-voice
+```
 
 **Installation:**
 ```bash
@@ -68,6 +75,7 @@ sudo apt-get install espeak
 - ✅ YOLO object detection
 - ✅ Face recognition with DeepFace
 - ✅ Text-to-Speech interaction
+- ✅ Voice recognition and learning
 - ✅ Person/object database
 - ✅ Auto-learning mode
 

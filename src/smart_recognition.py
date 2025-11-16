@@ -22,11 +22,12 @@ from datetime import datetime
 # Import our modules
 from face_recognition import FaceRecognizer
 from tts_module import TextToSpeech
+from voice_listener import VoiceListener
 
 class SmartRecognizer:
     """Unified recognizer for objects and people"""
 
-    def __init__(self, database_path='smart_database.json', use_yolo=True, use_deepface=True, use_tts=True):
+    def __init__(self, database_path='smart_database.json', use_yolo=True, use_deepface=True, use_tts=True, use_voice=True):
         self.database_path = database_path
         self.database = self._load_database()
 
@@ -51,9 +52,26 @@ class SmartRecognizer:
         if use_tts:
             self.tts = TextToSpeech(engine='espeak')
 
+        # Initialize Voice Listener
+        self.voice_listener = None
+        if use_voice:
+            try:
+                self.voice_listener = VoiceListener()
+                if self.voice_listener.available:
+                    print("✓ Voice listener initialized")
+                else:
+                    self.voice_listener = None
+            except Exception as e:
+                print(f"⚠️  Voice listener not available: {e}")
+                self.voice_listener = None
+
         # Track what we've asked about recently (to avoid spam)
         self.recently_asked = {}  # {name: timestamp}
         self.ask_cooldown = 30.0  # seconds between asking about same thing
+
+        # Track pending voice learning
+        self.waiting_for_name = False
+        self.pending_face_img = None
 
     def _load_database(self):
         """Load object database"""
@@ -190,8 +208,50 @@ class SmartRecognizer:
             if elapsed < self.ask_cooldown:
                 return
 
-        # Ask via TTS
-        if self.tts and self.tts.available:
+        # Don't ask if we're already waiting for a name
+        if self.waiting_for_name:
+            return
+
+        # Ask via TTS and listen for response
+        if self.tts and self.tts.available and self.voice_listener and self.voice_listener.available:
+            # Mark that we're waiting
+            self.waiting_for_name = True
+            self.pending_face_img = face_img.copy()
+            self.recently_asked[key] = time.time()
+
+            # Ask and listen in a separate thread to not block camera processing
+            def ask_and_learn():
+                response = self.voice_listener.ask_and_listen(
+                    self.tts,
+                    "I see someone I don't recognize. Who is this?",
+                    timeout=5,
+                    phrase_time_limit=5
+                )
+
+                if response:
+                    # Clean up the name (capitalize first letter)
+                    name = response.strip().title()
+                    print(f"Learning new person: {name}")
+
+                    # Learn the person
+                    if self.pending_face_img is not None:
+                        success = self.learn_person(name, self.pending_face_img)
+                        if success:
+                            print(f"✓ Learned {name}")
+                        else:
+                            print(f"✗ Failed to learn {name}")
+                else:
+                    print("No response heard, will ask again later")
+
+                # Reset waiting state
+                self.waiting_for_name = False
+                self.pending_face_img = None
+
+            # Start in background thread
+            threading.Thread(target=ask_and_learn, daemon=True).start()
+
+        elif self.tts and self.tts.available:
+            # Fallback: just ask (use web interface to teach)
             self.tts.speak("I see someone I don't recognize. Who is this?")
             self.recently_asked[key] = time.time()
 
@@ -573,10 +633,11 @@ def spin_ros(node):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Smart recognition system')
+    parser = argparse.ArgumentParser(description='Smart recognition system with voice learning')
     parser.add_argument('--no-yolo', action='store_true', help='Disable YOLO')
     parser.add_argument('--no-deepface', action='store_true', help='Disable DeepFace')
     parser.add_argument('--no-tts', action='store_true', help='Disable TTS')
+    parser.add_argument('--no-voice', action='store_true', help='Disable voice learning')
     parser.add_argument('--database', type=str, default='smart_database.json')
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8080)
@@ -584,7 +645,7 @@ def main():
     args = parser.parse_args()
 
     print(f'\n{"="*60}')
-    print(f'Smart Recognition System')
+    print(f'Smart Recognition System with Voice Learning')
     print(f'{"="*60}')
 
     # Initialize recognizer
@@ -592,7 +653,8 @@ def main():
         database_path=args.database,
         use_yolo=not args.no_yolo,
         use_deepface=not args.no_deepface,
-        use_tts=not args.no_tts
+        use_tts=not args.no_tts,
+        use_voice=not args.no_voice
     )
 
     # Initialize ROS2
@@ -609,6 +671,23 @@ def main():
 
     print(f'Web interface: http://{args.host}:{args.port}')
     print(f'Database: {args.database}')
+
+    # Show which features are enabled
+    features = []
+    if recognizer.yolo_available:
+        features.append("YOLO")
+    if recognizer.face_recognizer.deepface_available:
+        features.append("DeepFace")
+    if recognizer.tts and recognizer.tts.available:
+        features.append("TTS")
+    if recognizer.voice_listener and recognizer.voice_listener.available:
+        features.append("Voice Learning")
+
+    print(f'Enabled features: {", ".join(features) if features else "None"}')
+
+    if recognizer.voice_listener and recognizer.voice_listener.available:
+        print(f'\n💡 Voice learning enabled! K1 will ask "Who is this?" and listen for your answer.')
+
     print(f'\nPress Ctrl+C to stop')
     print(f'{"="*60}\n')
 
