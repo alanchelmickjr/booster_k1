@@ -54,6 +54,14 @@ python src/smart_recognition.py
 4. Name objects through the web UI
 5. K1 remembers everyone and everything!
 
+**Soft auto-start (ask permission before starting):**
+```bash
+python src/smart_recognition.py --auto-ask
+```
+K1 will ask "Would you like me to start?" and wait for your response!
+- Say "yes" to start immediately
+- Say "no" to enter standby mode (then say "start" when ready)
+
 **Disable voice learning (use web only):**
 ```bash
 python src/smart_recognition.py --no-voice
