@@ -1,5 +1,5 @@
 # K-1 Robot Test Results
-Date: 2025-11-16
+Date: 2025-11-17
 Tester: System Automated Test
 Robot IP: 192.168.88.153
 
@@ -8,7 +8,7 @@ Robot IP: 192.168.88.153
 ✅ **Working Components:**
 - SSH connection via WiFi
 - Emergency stop system 
-- Camera feed (with ROS2)
+- Camera feed (with `CameraUtils` module)
 - Booster SDK installed
 - Robot services running
 
@@ -36,7 +36,7 @@ Robot IP: 192.168.88.153
 
 ### Phase 3: Software Tests 🔶
 - [x] Emergency stop system active ✅
-- [x] Camera feed works (http://192.168.88.153:8080) ✅
+- [x] Camera feed works with `CameraUtils` module (http://192.168.88.153:8080) ✅
 - [ ] Robot control connection fails ❌
   - Error: "Connection failed: Request timeout - Robot not responding"
   - Services are running but SDK can't connect

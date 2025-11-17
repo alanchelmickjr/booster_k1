@@ -135,8 +135,7 @@ class CameraSubscriber(Node):
 
     def __init__(self, detector, show_stereo=False, process_right=False):
         super().__init__('camera_yolo_detector')
-
-        self.bridge = CvBridge()
+        self.utils = CameraUtils(self)
         self.detector = detector
         self.latest_left_frame = None
         self.latest_right_frame = None
@@ -180,16 +179,8 @@ class CameraSubscriber(Node):
             )
 
     def convert_nv12_to_bgr(self, msg):
-        """Convert NV12 ROS image to BGR OpenCV image"""
-        if msg.encoding == 'nv12':
-            height = msg.height
-            width = msg.width
-            img_data = np.frombuffer(msg.data, dtype=np.uint8)
-            yuv = img_data.reshape((int(height * 1.5), width))
-            cv_image = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
-            return cv_image
-        else:
-            return self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+    """Convert NV12 ROS image to BGR OpenCV image"""
+    return self.utils.convert_nv12_to_bgr(msg)
 
     def update_fps(self):
         """Update FPS counter"""
