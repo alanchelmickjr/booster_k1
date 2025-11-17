@@ -37,8 +37,8 @@ class FaceRecognitionNode(Node):
         self.learning_mode = False
         self.learning_name = None
 
-        # Use booster camera bridge topics
-        left_topic = '/booster_camera_bridge/image_left_raw'
+        # Use direct camera topics from mipi_cam node
+        left_topic = '/image_left_raw'
 
         self.get_logger().info(f'Camera topic: {left_topic}')
 

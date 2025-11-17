@@ -602,8 +602,8 @@ class SmartRecognitionNode(Node):
         self.learning_mode = False
         self.learning_name = None
 
-        # Subscribe to camera
-        left_topic = '/booster_camera_bridge/image_left_raw'
+        # Subscribe to camera (direct from mipi_cam node)
+        left_topic = '/image_left_raw'
         self.get_logger().info(f'Camera topic: {left_topic}')
 
         self.subscription = self.create_subscription(

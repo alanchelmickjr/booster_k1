@@ -27,9 +27,9 @@ class CameraSubscriber(Node):
         self.latest_right_frame = None
         self.show_stereo = show_stereo
 
-        # Use booster camera bridge topics
-        left_topic = '/booster_camera_bridge/image_left_raw'
-        right_topic = '/booster_camera_bridge/image_right_raw'
+        # Use direct camera topics from mipi_cam node
+        left_topic = '/image_left_raw'
+        right_topic = '/image_right_raw'
 
         self.get_logger().info(f'Left camera topic: {left_topic}')
         if show_stereo:

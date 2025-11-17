@@ -22,8 +22,13 @@ class YOLODetector:
         self.detection_type = detection_type
         self.confidence = confidence
         self.model = None
+        self.available = False
+        self.use_opencv_face = False
+        self.face_cascade = None
 
         try:
+            # Import ultralytics - this is where the torchvision error can occur
+            print("Attempting to load YOLO model...")
             from ultralytics import YOLO
 
             if detection_type == 'face':
@@ -40,54 +45,89 @@ class YOLODetector:
                 self.model = YOLO(f'{model_type}.pt')
                 self.target_classes = None  # All classes
 
-            print("Model loaded successfully!")
+            print("✓ Model loaded successfully!")
             self.available = True
 
-        except ImportError:
-            print("ERROR: ultralytics not installed. Install with: pip3 install ultralytics")
-            print("Falling back to OpenCV face detection...")
-            self.available = False
-            self.use_opencv_face = True
-
-            # Load OpenCV Haar Cascade for face detection
-            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        except (ImportError, AttributeError, RuntimeError) as e:
+            # Catch ImportError, AttributeError (torchvision issues), and RuntimeError (CUDA issues)
+            error_msg = str(e)
+            print(f"\n⚠️  ERROR loading YOLO: {error_msg}")
+            
+            if 'torchvision' in error_msg or 'extension' in error_msg:
+                print("   This is likely a torchvision installation issue.")
+                print("   Try reinstalling: pip3 install --upgrade --force-reinstall torch torchvision ultralytics")
+            elif 'CUDA' in error_msg or 'GPU' in error_msg:
+                print("   This is a CUDA/GPU issue. YOLO will try to use CPU if available.")
+            else:
+                print("   Install ultralytics with: pip3 install ultralytics")
+            
+            print("   Falling back to OpenCV face detection...")
+            self._init_opencv_fallback()
 
         except Exception as e:
-            print(f"ERROR loading YOLO: {e}")
-            print("Falling back to OpenCV face detection...")
-            self.available = False
-            self.use_opencv_face = True
+            print(f"\n⚠️  Unexpected error loading YOLO: {type(e).__name__}: {e}")
+            print("   Falling back to OpenCV face detection...")
+            self._init_opencv_fallback()
 
+    def _init_opencv_fallback(self):
+        """Initialize OpenCV face detection as fallback"""
+        self.available = False
+        self.use_opencv_face = True
+        
+        try:
             cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             self.face_cascade = cv2.CascadeClassifier(cascade_path)
+            if self.face_cascade.empty():
+                print("   ✗ Failed to load OpenCV face cascade")
+            else:
+                print("   ✓ OpenCV face detector loaded successfully")
+        except Exception as e:
+            print(f"   ✗ Error loading OpenCV cascade: {e}")
 
     def detect(self, frame):
         """Run detection on frame and return annotated image"""
         if self.available and self.model is not None:
-            # YOLO detection
-            results = self.model(frame, conf=self.confidence, verbose=False)
+            try:
+                # YOLO detection
+                results = self.model(frame, conf=self.confidence, verbose=False)
 
-            # Draw results on frame
-            annotated_frame = results[0].plot()
+                # Draw results on frame
+                annotated_frame = results[0].plot()
 
-            return annotated_frame
-        else:
+                return annotated_frame
+            except Exception as e:
+                # If YOLO fails during detection, fall back to OpenCV
+                print(f"YOLO detection failed: {e}")
+                if self.face_cascade is not None:
+                    return self._opencv_detect(frame)
+                else:
+                    return frame
+        elif self.use_opencv_face and self.face_cascade is not None:
             # OpenCV face detection fallback
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
-
+            return self._opencv_detect(frame)
+        else:
+            # No detection available, return original frame
             annotated_frame = frame.copy()
-            for (x, y, w, h) in faces:
-                cv2.rectangle(annotated_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(annotated_frame, 'Face', (x, y-10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-            # Add face count
-            cv2.putText(annotated_frame, f'Faces: {len(faces)}', (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
+            cv2.putText(annotated_frame, 'No detector available', (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             return annotated_frame
+
+    def _opencv_detect(self, frame):
+        """OpenCV face detection"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+
+        annotated_frame = frame.copy()
+        for (x, y, w, h) in faces:
+            cv2.rectangle(annotated_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.putText(annotated_frame, 'Face', (x, y-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+        # Add face count
+        cv2.putText(annotated_frame, f'Faces: {len(faces)}', (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        return annotated_frame
 
 
 class CameraSubscriber(Node):
@@ -107,10 +147,16 @@ class CameraSubscriber(Node):
         self.fps = 0
         self.frame_count = 0
         self.last_fps_time = time.time()
+        
+        # Diagnostic counters
+        self.messages_received = 0
+        self.messages_processed = 0
+        self.detection_errors = 0
+        self.last_message_time = None
 
-        # Use booster camera bridge topics
-        left_topic = '/booster_camera_bridge/image_left_raw'
-        right_topic = '/booster_camera_bridge/image_right_raw'
+        # Use direct camera topics from mipi_cam node
+        left_topic = '/image_left_raw'
+        right_topic = '/image_right_raw'
 
         self.get_logger().info(f'Left camera topic: {left_topic}')
         if show_stereo:
@@ -158,24 +204,50 @@ class CameraSubscriber(Node):
 
     def left_callback(self, msg):
         """Callback for left camera image messages"""
+        self.messages_received += 1
+        self.last_message_time = time.time()
+        
+        # Log every 10th message to avoid spam
+        if self.messages_received % 10 == 1:
+            self.get_logger().info(f'[CALLBACK] Received message #{self.messages_received}')
+            self.get_logger().info(f'[CALLBACK] Encoding: {msg.encoding}, Size: {msg.width}x{msg.height}')
+        
         try:
             # Convert to BGR
             cv_image = self.convert_nv12_to_bgr(msg)
-
+            
+            if cv_image is None:
+                self.get_logger().error(f'[CALLBACK] Image conversion returned None')
+                return
+            
             # Run detection
-            detected_frame = self.detector.detect(cv_image)
-
+            try:
+                detected_frame = self.detector.detect(cv_image)
+                self.get_logger().debug(f'[CALLBACK] Detection successful')
+            except Exception as det_err:
+                self.get_logger().error(f'[CALLBACK] Detection failed: {det_err}')
+                self.detection_errors += 1
+                detected_frame = cv_image  # Use original frame if detection fails
+            
             # Update FPS
             self.update_fps()
-
-            # Add FPS counter
+            
+            # Add FPS and diagnostic info
             cv2.putText(detected_frame, f'FPS: {self.fps:.1f}', (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
+            cv2.putText(detected_frame, f'Msgs: {self.messages_received}', (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            
             self.latest_left_frame = detected_frame
-
+            self.messages_processed += 1
+            
+            if self.messages_processed % 10 == 1:
+                self.get_logger().info(f'[CALLBACK] Processed {self.messages_processed} frames successfully')
+            
         except Exception as e:
-            self.get_logger().error(f'Error processing left image: {str(e)}')
+            self.get_logger().error(f'[CALLBACK] Error processing left image: {e}')
+            import traceback
+            self.get_logger().error(f'[CALLBACK] Traceback: {traceback.format_exc()}')
 
     def right_callback(self, msg):
         """Callback for right camera image messages"""
