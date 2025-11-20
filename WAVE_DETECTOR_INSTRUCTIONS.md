@@ -1,8 +1,35 @@
 # K-1 YOLO Wave Detection System - User Guide
 
-## 🚀 System Status: RUNNING
+## 🚀 System Status: SOFTWARE READY (Hardware Check Required)
 
-The YOLO Wave Detection system is now active on your K-1 robot with a web interface for monitoring.
+The YOLO Wave Detection system has been consolidated and optimized. However, recent diagnostics indicate a potential hardware issue with the camera connection.
+
+## ⚠️ Critical Hardware Check
+
+Before running the system, please verify that your camera is detected:
+
+```bash
+ls -l /dev/video*
+```
+
+**If this returns "No such file or directory":**
+1.  **Check Connections:** Ensure the camera USB/CSI cable is firmly connected to the Jetson.
+2.  **Reboot Robot:** A full system reboot often fixes missing video devices.
+    ```bash
+    sudo reboot
+    ```
+3.  **Check Kernel Logs:**
+    ```bash
+    dmesg | grep -i -E 'camera|video|uvc'
+    ```
+
+## 🎮 Quick Start (Once Camera is Detected)
+
+To start the wave detector:
+
+```bash
+./start_wave_detector.sh
+```
 
 ## 📺 Access the Web Interface
 
@@ -16,77 +43,33 @@ You'll see:
 - FPS and detection statistics
 - Visual indicators for wave recognition
 
-## 👋 How to Test Wave Detection
+## 🔧 Troubleshooting & Tools
 
-1. **Stand in front of the camera** - Make sure you're visible
-2. **Wave your hand** - Move it side to side above shoulder level
-3. **Look for visual feedback**:
-   - Box color changes from green to yellow
-   - "WAVE DETECTED!" appears on screen
-   - Robot should say hello via TTS
+We have included new diagnostic tools to help you:
 
-## 🎯 Current Detection Settings
+1.  **`./diagnose_camera.sh`**: Checks ROS2 topics, running processes, and video devices.
+2.  **`./restart_camera.sh`**: Attempts to forcefully restart the camera bridge service.
 
-- **Confidence Threshold**: 0.4 (40%)
-- **Wave Movement Threshold**: 20 pixels horizontal movement
-- **Frame Skip**: Processing every 2nd frame for performance
-- **Max Resolution**: 640px width
+## 📂 System Architecture
+
+The system has been simplified to:
+
+1.  **`src/wave_detector.py`** - The core logic (YOLO + Wave Detection + Web Server + TTS)
+2.  **`start_wave_detector.sh`** - The entry point script that auto-detects camera topics.
+3.  **`src/tts_module.py`** - Shared Text-to-Speech module.
+
+## 🎯 Detection Settings
+
+- **Confidence Threshold**: 0.3 (30%)
+- **Wave Movement Threshold**: 25 pixels horizontal movement
 - **TTS Cooldown**: 5 seconds between wave greetings
-
-## 🔍 Debugging Tips
-
-If wave detection isn't working:
-1. **Check the web interface** - Are you being detected as a person?
-2. **Wave more dramatically** - Bigger side-to-side motion
-3. **Move closer to camera** - Need minimum 100px height
-4. **Check lighting** - Better lighting helps detection
-
-## 📊 What You Should See
-
-In the web interface:
-- **FPS counter** - Should be around 10-15 FPS
-- **People count** - Number of people detected
-- **Bounding boxes** - Around each detected person
-- **Center dots** - Blue dots tracking person center (for wave detection)
-- **Status messages** - "WAVE DETECTED!" when recognized
+- **Greeting Cooldown**: 15 seconds for general person detection
 
 ## 🛑 To Stop the System
 
-From terminal:
+From terminal where it's running:
+Press **Ctrl+C**
+
+Or if running in background:
 ```bash
-# Find the process
-ps aux | grep yolo_wave_detector_web
-# Kill it
-kill [PID]
-```
-
-Or press Ctrl+C in the terminal where it's running.
-
-## 🔧 Performance Notes
-
-The system is optimized for Jetson Orin NX 8GB:
-- Frame skipping reduces load
-- Resolution limiting prevents memory issues  
-- Error recovery handles camera crashes
-- Auto-restart on failures
-
-## 📝 Known Issues
-
-1. **Camera may crash after extended use** - System will auto-restart
-2. **Wave detection needs clear arm movement** - Side-to-side works best
-3. **Multiple people may confuse wave detection** - Works best with 1-2 people
-
-## 🎉 Success Indicators
-
-You know it's working when:
-✅ Web interface shows live video
-✅ Green boxes appear around people
-✅ Robot says hello when you wave
-✅ Yellow box appears during wave
-✅ FPS counter shows 10+ FPS
-
----
-
-**Current deployment**: Running on port 8080
-**Process**: Running in background
-**Auto-restart**: Enabled (up to 5 attempts)
+pkill -f wave_detector
