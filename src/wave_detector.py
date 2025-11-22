@@ -322,44 +322,30 @@ class WaveHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode())
             
         elif self.path.startswith('/image'):
+            # Default image (No Signal)
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(img, "NO CAMERA SIGNAL", (150, 200),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
+            
             if self.camera_node:
-                # Check for timeout (no frame in last 3 seconds)
-                if time.time() - getattr(self.camera_node, 'last_frame_received', 0) > 3.0:
-                    # Generate "No Signal" image
-                    img = np.zeros((480, 640, 3), dtype=np.uint8)
-                    cv2.putText(img, "NO CAMERA SIGNAL", (150, 240),
-                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
-                    cv2.putText(img, "Check ROS2 Topics", (180, 280),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 1)
-                    
-                    self.send_response(200)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.end_headers()
-                    _, buffer = cv2.imencode('.jpg', img)
-                    self.wfile.write(buffer.tobytes())
-                elif self.camera_node.latest_frame is not None:
-                    self.send_response(200)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.end_headers()
-                    
-                    _, buffer = cv2.imencode('.jpg', self.camera_node.latest_frame,
-                                            [cv2.IMWRITE_JPEG_QUALITY, 80])
-                    self.wfile.write(buffer.tobytes())
-                else:
-                    # Waiting for first frame
-                    img = np.zeros((480, 640, 3), dtype=np.uint8)
+                if self.camera_node.latest_frame is not None:
+                    img = self.camera_node.latest_frame
+                elif time.time() - getattr(self.camera_node, 'last_frame_received', 0) < 3.0:
                     cv2.putText(img, "WAITING FOR VIDEO...", (150, 240),
                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
-                    self.send_response(200)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.end_headers()
-                    _, buffer = cv2.imencode('.jpg', img)
-                    self.wfile.write(buffer.tobytes())
+                else:
+                    cv2.putText(img, "CHECK HARDWARE", (180, 280),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 1)
             else:
-                self.send_error(503, 'Camera node not initialized')
+                cv2.putText(img, "WEB-ONLY MODE", (180, 240),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
+
+            self.send_response(200)
+            self.send_header('Content-type', 'image/jpeg')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            _, buffer = cv2.imencode('.jpg', img)
+            self.wfile.write(buffer.tobytes())
         else:
             self.send_error(404, 'Not found')
 
@@ -394,15 +380,19 @@ def main():
     rclpy.init()
     
     # Create camera node
-    camera_node = CameraSubscriber(detector, topic=args.topic)
-    
-    # Set node for HTTP handler
-    WaveHTTPHandler.camera_node = camera_node
-    
-    # Start ROS2 in separate thread
-    ros_thread = threading.Thread(target=spin_ros, args=(camera_node,), daemon=True)
-    ros_thread.start()
-    
+    try:
+        camera_node = CameraSubscriber(detector, topic=args.topic)
+        # Set node for HTTP handler
+        WaveHTTPHandler.camera_node = camera_node
+        
+        # Start ROS2 in separate thread
+        ros_thread = threading.Thread(target=spin_ros, args=(camera_node,), daemon=True)
+        ros_thread.start()
+    except Exception as e:
+        print(f"⚠️ Failed to initialize ROS2 camera node: {e}")
+        print("Starting in WEB-ONLY mode (No camera)")
+        WaveHTTPHandler.camera_node = None
+
     # Start HTTP server
     port = 8080
     server_address = ('0.0.0.0', port)

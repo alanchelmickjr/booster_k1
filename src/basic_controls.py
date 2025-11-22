@@ -479,7 +479,7 @@ def main():
         print("\n⚠️  WARNING: Could not verify connection to robot.")
         print("   Please check:")
         print("   1. Robot is powered on")
-        print("   2. Network interface 'eth0' is correct")
+        print("   2. Network interface '127.0.0.1' is correct")
         print("   3. Robot and computer are on the same network")
         print("   4. Robot is ready to accept commands")
         print("\n   You can still try commands, but they may timeout.")
